@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import textwrap
 from typing import Any, Dict, Optional
@@ -25,7 +26,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_OLLAMA_BASE_URL = "http://localhost:11434"
+_OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 _DEFAULT_MODEL = "llama3"
 _DEFAULT_TIMEOUT = 60  # LLM yanıtı için daha uzun bekleme
 
