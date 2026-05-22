@@ -76,6 +76,12 @@
         <div class="log-panel" id="logPanel"></div>
       </div>
 
+      <!-- Tarama Geçmişi -->
+      <div class="card">
+        <h2>Son Taramalar <button class="btn btn-ghost btn-sm" style="float:right;margin-top:-4px" onclick="loadHistory()">⟳ Yenile</button></h2>
+        <div id="historyList"><div class="empty">Yükleniyor...</div></div>
+      </div>
+
       <!-- Canlı Bulgular -->
       <div class="card" id="findingsCard" style="display:none">
         <h2>Bulgular <span id="findingCount" style="color:var(--color-muted);font-weight:400;font-size:13px"></span></h2>
@@ -88,6 +94,6 @@
   </main>
 
   <script src="/static/app.js"></script>
-  <script>initPage();</script>
+  <script>initPage(); loadHistory();</script>
 </body>
 </html>

@@ -7,8 +7,6 @@
 #   Juice Shop → http://juice-shop:3000/
 #   WebGoat    → http://webgoat:8080/WebGoat/
 
-version: "3.9"
-
 services:
   dvwa:
     image: vulnerables/web-dvwa
@@ -31,7 +29,7 @@ services:
     restart: unless-stopped
 
   webgoat:
-    image: webgoat/goat-and-wolf
+    image: webgoat/webgoat
     networks:
       - internal
     restart: unless-stopped
