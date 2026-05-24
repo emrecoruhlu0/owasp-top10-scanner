@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 _OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 _DEFAULT_MODEL = "llama3"
-_DEFAULT_TIMEOUT = 60  # LLM yanıtı için daha uzun bekleme
+_DEFAULT_TIMEOUT = 180  # CPU'da llama3 + RAG context için yeterli süre
 
 # Desteklenmeyen format durumunda döndürülecek güvenli varsayılan
 _LLM_UNAVAILABLE: Dict[str, Any] = {
@@ -66,9 +66,14 @@ class LLMClient:
     # Prompt oluşturma
     # ------------------------------------------------------------------
 
-    def _build_prompt(self, finding: Dict[str, Any]) -> str:
+    def _build_prompt(self, finding: Dict[str, Any], rag_context: str = "") -> str:
         """
         Finding sözlüğünden yapılandırılmış bir analiz prompt'u üretir.
+
+        Args:
+            finding    : Bulgu sözlüğü (Finding.to_dict() çıktısı).
+            rag_context: Knowledge base'den çekilmiş referans bilgi bloğu.
+                         Boş ise prompt'a eklenmez (RAG kapalı modu).
 
         Llama 3 gibi sohbet modelleri talimat verilmezse markdown bloğu
         veya açıklama metni ekler. Prompt; modeli saf JSON üretmeye
@@ -77,6 +82,8 @@ class LLMClient:
           2. Açık yasaklar — markdown, ``` blokları, açıklama metni yasak.
           3. Yanıtı doğrudan açan brace { ile başlama talimatı.
           4. Doldurulmuş şema örneği — modelin kopyalaması yeterli.
+          5. RAG context: Varsa OWASP knowledge base'den çekilmiş referans
+             metin model bilgisini güçlendirir ve halüsinasyonu azaltır.
         """
         owasp_id   = finding.get("owasp_id",        "Bilinmiyor")
         title      = finding.get("title",            "Bilinmiyor")
@@ -86,38 +93,77 @@ class LLMClient:
         snippet    = finding.get("response_snippet", "—")
         confidence = finding.get("confidence",       "—")
 
+        # RAG context bloğu (varsa)
+        rag_block = ""
+        if rag_context and rag_context.strip():
+            rag_block = textwrap.dedent(f"""\
+
+                REFERENCE KNOWLEDGE (use this to enrich your analysis — cite specific
+                mitigations and CWE IDs when relevant; do NOT copy verbatim):
+                {rag_context}
+            """)
+
         prompt = textwrap.dedent(f"""\
-            SYSTEM: You are a JSON-only API endpoint for web security analysis.
-            You MUST respond with a single raw JSON object.
-            STRICT RULES — violation causes system failure:
-              - Do NOT write any text before or after the JSON object.
-              - Do NOT use markdown, code fences (```), or backticks.
-              - Do NOT greet, explain, or comment.
-              - Do NOT wrap output in an array.
-              - Start your response with the opening brace: {{
-              - End your response with the closing brace: }}
+            SYSTEM: Sen bir web güvenlik analiz uzmanısın ve sadece JSON nesnesi
+            döndüren bir API endpoint'isin. Yanıtların TÜRKÇE olacak.
 
-            INPUT (security finding to analyze):
-            OWASP Category : {owasp_id} — {title}
-            Target URL     : {url}
-            Parameter      : {parameter}
-            Payload used   : {payload}
-            Detection conf : {confidence}
-            Response snippet: {snippet}
+            KATI KURALLAR (ihlal sistem hatasına yol açar):
+              - JSON nesnesinden önce veya sonra HİÇBİR metin yazma.
+              - Markdown, code fence (```), backtick KULLANMA.
+              - Selamlama, açıklama, yorum YAPMA.
+              - Diziyle sarmalama (array içine ALMA).
+              - Yanıt {{ ile başlayıp }} ile bitsin.
+              - Aşağıdaki örnekteki yer tutucuları (placeholder) ASLA olduğu gibi
+                kopyalama — gerçek INPUT için anlamlı, spesifik içerik üret.
 
-            OUTPUT (copy this structure, fill every field, no extra keys):
+            RİSK SEVİYESİ KURALI (önemli):
+              - Kritik       : Doğrudan RCE, tam DB sızıntısı, auth atlama (örn. SQLi, RCE, deserialization)
+              - Yüksek       : Veri sızıntısı veya hesap ele geçirme yolu açan (örn. XSS, IDOR, eski CVE)
+              - Orta         : Saldırı zincirinin parçası ama tek başına sınırlı (örn. HSTS yok, brute-force yok)
+              - Düşük        : Bilgi sızıntısı veya defense-in-depth eksikliği (örn. Server header, Referrer-Policy)
+              - Bilgilendirici: Sadece keşif değeri (örn. robots.txt içeriği, public dosya listesi)
+            HER ŞEYE 'Kritik' DEME — bulgunun gerçek etkisini değerlendir.
+
+            ÖRNEK 1 — Kritik risk (SQL Injection):
+            INPUT: A03 — SQL Injection, /login.php, param=username,
+                   payload="' OR 1=1--", confidence=High
+            OUTPUT:
             {{
-              "risk_seviyesi": "Yüksek",
-              "teknik_aciklama": "3 sentence max technical explanation.",
-              "kod_duzeltme": "Specific fix or mitigation code/approach.",
-              "genel_onlemler": ["measure 1", "measure 2", "measure 3"],
-              "llm_guven": "Orta"
+              "risk_seviyesi": "Kritik",
+              "teknik_aciklama": "Kullanıcı girdisi SQL sorgusuna doğrudan birleştirildiği için saldırgan UNION SELECT ile veritabanından veri çekebilir veya kimlik doğrulamayı atlayabilir. Bu açık tam veri sızıntısına yol açar.",
+              "kod_duzeltme": "cursor.execute('SELECT * FROM users WHERE username=%s', (username,)) — parametreli sorgu kullanın; ORM (SQLAlchemy) tercih edin; raw SQL'den kaçının.",
+              "genel_onlemler": ["Tüm DB sorgularında parametreli (prepared) statement kullanın", "Allowlist tabanlı input validation uygulayın", "Uygulama DB kullanıcısına least-privilege yetkisi verin", "WAF'ta SQLi pattern'leri için kural tanımlayın"],
+              "llm_guven": "Yüksek"
             }}
 
-            Allowed values — risk_seviyesi: Kritik | Yüksek | Orta | Düşük | Bilgilendirici
-            Allowed values — llm_guven: Yüksek | Orta | Düşük
+            ÖRNEK 2 — Düşük risk (defense-in-depth eksikliği):
+            INPUT: A05 — Sunucu Versiyon Sızıntısı, http://target/,
+                   param=Server, payload="Apache/2.4.25", confidence=High
+            OUTPUT:
+            {{
+              "risk_seviyesi": "Düşük",
+              "teknik_aciklama": "Server yanıt başlığı tam sürüm bilgisini açığa çıkarıyor. Bu tek başına bir zafiyet değil ama saldırganın bilinen CVE'lere doğrudan hedeflemesini kolaylaştırır — defense-in-depth ihlali.",
+              "kod_duzeltme": "Apache: 'ServerTokens Prod' ve 'ServerSignature Off' yönergelerini httpd.conf'a ekle. Nginx: 'server_tokens off;' http bloğuna ekle.",
+              "genel_onlemler": ["Tüm sürüm bilgisi sızdıran başlıkları (Server, X-Powered-By) kapatın", "Yüklü bileşenleri düzenli yamalayın", "Bilinen CVE'ler için periyodik tarama yapın"],
+              "llm_guven": "Yüksek"
+            }}
+            {rag_block}
+            ŞİMDİ BU GERÇEK INPUT'U ANALİZ ET:
+            OWASP Category   : {owasp_id} — {title}
+            Target URL       : {url}
+            Parameter        : {parameter}
+            Payload used     : {payload}
+            Detection conf   : {confidence}
+            Response snippet : {snippet}
 
-            Respond NOW with only the JSON object:\
+            ÇIKTI ŞEMASI (her alanı YUKARıDAKİ GERÇEK INPUT'A ÖZGÜ doldur):
+              - risk_seviyesi  : Kritik | Yüksek | Orta | Düşük | Bilgilendirici
+              - teknik_aciklama: 2-3 cümle; bulguya özgü teknik açıklama
+              - kod_duzeltme   : Spesifik kod örneği veya yapılandırma satırı
+              - genel_onlemler : 3-5 maddelik liste; her madde uygulanabilir öneri
+              - llm_guven      : Yüksek | Orta | Düşük
+
+            Sadece JSON nesnesini döndür, başka hiçbir şey yazma:\
         """)
 
         return prompt
@@ -126,18 +172,24 @@ class LLMClient:
     # API çağrısı
     # ------------------------------------------------------------------
 
-    def query(self, finding: Dict[str, Any]) -> Dict[str, Any]:
+    def query(
+        self,
+        finding: Dict[str, Any],
+        rag_context: str = "",
+    ) -> Dict[str, Any]:
         """
         Bir Finding için Ollama'ya analiz isteği atar.
 
         Args:
-            finding: base_module.Finding'den türetilmiş sözlük.
+            finding    : base_module.Finding'den türetilmiş sözlük.
+            rag_context: Knowledge base'den çekilmiş referans bilgi (opsiyonel).
+                         Boş ise klasik prompt kullanılır.
 
         Returns:
             LLM'den gelen ayrıştırılmış JSON yanıtı.
             Ollama erişilemezse _LLM_UNAVAILABLE sabiti döner.
         """
-        prompt = self._build_prompt(finding)
+        prompt = self._build_prompt(finding, rag_context=rag_context)
         payload = {
             "model": self.model,
             "prompt": prompt,

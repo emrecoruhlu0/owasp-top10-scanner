@@ -38,6 +38,10 @@ class ScanRequest(BaseModel):
     no_llm: bool = False
     cookie: Optional[str] = None
     timeout: int = 5
+    # Yeni alanlar — çoklu LLM ve RAG
+    llm_model: Optional[str] = None
+    llm_models: Optional[List[str]] = None
+    use_rag: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -67,12 +71,98 @@ async def start_scan(req: ScanRequest):
             no_llm=req.no_llm,
             cookie=req.cookie,
             timeout=req.timeout,
+            llm_model=req.llm_model,
+            llm_models=req.llm_models,
+            use_rag=req.use_rag,
         )
     except RuntimeError as exc:
         if str(exc) == "too_many_scans":
             raise HTTPException(status_code=429, detail="Maksimum eş zamanlı tarama limitine ulaşıldı.")
         raise HTTPException(status_code=500, detail=str(exc))
     return {"scan_id": scan_id}
+
+
+# ---------------------------------------------------------------------------
+# LLM ve RAG durum endpoint'leri
+# ---------------------------------------------------------------------------
+
+_OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+
+@app.get("/api/llm-models")
+async def list_llm_models():
+    """
+    Ollama'da yüklü modelleri döndürür. UI dropdown'unu doldurmak için.
+
+    Returns:
+        {
+          "available": true,
+          "models": [
+            {"name": "llama3:latest", "size": 4661211808, "is_embedding": false},
+            ...
+          ],
+          "embed_model_ready": true | false
+        }
+    """
+    try:
+        resp = requests.get(f"{_OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=5)
+        resp.raise_for_status()
+        raw_models = resp.json().get("models", [])
+    except requests.RequestException as exc:
+        return {
+            "available": False,
+            "models": [],
+            "embed_model_ready": False,
+            "error": str(exc),
+        }
+
+    # Embedding modelleri ayır (UI'da seçilmesini istemiyoruz, ama varlığını bildiriyoruz)
+    EMBED_NAMES = ("nomic-embed", "mxbai-embed", "all-minilm", "snowflake-arctic-embed")
+    models = []
+    embed_ready = False
+    for m in raw_models:
+        name = m.get("name", "")
+        is_embed = any(e in name for e in EMBED_NAMES)
+        if is_embed:
+            embed_ready = embed_ready or ("nomic-embed-text" in name)
+            continue
+        models.append({
+            "name": name,
+            "size": m.get("size", 0),
+            "modified_at": m.get("modified_at", ""),
+        })
+
+    # Boyuta göre sırala (küçükten büyüğe — kullanıcı hızlı modeli kolayca seçsin)
+    models.sort(key=lambda x: x["size"])
+
+    return {
+        "available": True,
+        "models": models,
+        "embed_model_ready": embed_ready,
+    }
+
+
+@app.get("/api/rag/status")
+async def rag_status():
+    """RAG knowledge base'in durumunu döndürür (chunk sayısı vs.)."""
+    # core/ modülü guvenlik_proje altında — sys.path'e ekle
+    import sys
+    guvenlik_proje_path = "/app/guvenlik_proje"
+    if guvenlik_proje_path not in sys.path:
+        sys.path.insert(0, guvenlik_proje_path)
+
+    try:
+        from core.rag import KnowledgeBase  # type: ignore
+    except ImportError as exc:
+        return {"available": False, "reason": f"import_failed: {exc}"}
+
+    knowledge_dir = os.environ.get("KNOWLEDGE_DIR", "/app/guvenlik_proje/knowledge")
+    db_path = os.environ.get("RAG_DB_PATH", "/app/guvenlik_proje/rag_db")
+    try:
+        kb = KnowledgeBase(knowledge_dir=knowledge_dir, db_path=db_path)
+        return kb.stats()
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
 
 
 @app.get("/api/scan/{scan_id}")

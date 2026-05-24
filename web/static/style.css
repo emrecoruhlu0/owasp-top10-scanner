@@ -326,3 +326,43 @@ textarea { resize: vertical; min-height: 60px; font-family: monospace; }
   .module-grid { grid-template-columns: repeat(2, 1fr); }
   .summary-row { flex-direction: column; }
 }
+
+/* ---------- Çoklu LLM sekmeleri ---------- */
+.llm-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 10px;
+}
+.llm-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--color-muted);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+  transition: all 0.15s;
+}
+.llm-tab:hover {
+  color: var(--color-text);
+  background: rgba(79,142,247,0.06);
+}
+.llm-tab.active {
+  color: var(--color-accent);
+  border-color: var(--color-border);
+  border-bottom-color: var(--color-surface);
+  background: var(--color-surface);
+  margin-bottom: -1px;
+  font-weight: 500;
+}
+.llm-tab-pane {
+  display: none;
+  padding: 6px 2px;
+}
+.llm-tab-pane.active {
+  display: block;
+}

@@ -103,10 +103,8 @@ class A09LoggingMonitoringModule(BaseModule):
         self._check_log_file_exposure()
         self._check_monitoring_headers()
         self._check_bruteforce_alerting()
-        # A09 için her zaman LLM destekli kavramsal bulgu da ekle
-        self._add_conceptual_finding()
-        if self.enable_llm:
-            self._enrich_with_llm()
+        # NOT: LLM tespit kararı vermez (mimari karar) — kavramsal bulgu kaldırıldı.
+        # LLM zenginleştirmesi artık orkestratörde merkezi olarak yapılıyor.
         self.logger.info("A09 tamamlandı. %d bulgu.", len(self._findings))
         return self.get_findings()
 

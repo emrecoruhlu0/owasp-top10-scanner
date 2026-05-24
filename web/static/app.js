@@ -26,6 +26,105 @@ let liveFindings = [];
 function initPage() {
   buildModuleGrid();
   loadQuickTargets();
+  loadLLMModels();
+  loadRAGStatus();
+  toggleLLMSection();
+}
+
+// ---------- LLM Model seçimi ----------
+
+let _availableModels = [];
+
+async function loadLLMModels() {
+  const list = document.getElementById('llmModelList');
+  const hint = document.getElementById('llmModelHint');
+  if (!list) return;
+  list.innerHTML = '<div class="empty" style="grid-column:1/-1">Ollama modelleri yükleniyor...</div>';
+  try {
+    const res = await fetch('/api/llm-models');
+    const data = await res.json();
+    if (!data.available) {
+      list.innerHTML = `<div class="empty" style="grid-column:1/-1">Ollama'ya bağlanılamadı: ${data.error || 'bilinmiyor'}</div>`;
+      hint.textContent = 'LLM kullanmadan da tarama yapabilirsiniz (AI Analizi toggle\'ını kapatın).';
+      return;
+    }
+    _availableModels = data.models || [];
+    if (!_availableModels.length) {
+      list.innerHTML = '<div class="empty" style="grid-column:1/-1">Ollama\'da yüklü model yok. Örnek: <code>ollama pull llama3</code></div>';
+      return;
+    }
+    // İlk modeli varsayılan olarak seç
+    list.innerHTML = _availableModels.map((m, i) => `
+      <label class="module-chip${i === 0 ? ' checked' : ''}" id="llmchip-${cssId(m.name)}">
+        <input type="checkbox" value="${escAttr(m.name)}" ${i === 0 ? 'checked' : ''} onchange="updateLLMChip('${cssId(m.name)}')" />
+        <span>${escHtml(m.name)}</span>
+        <span style="color:var(--color-muted);font-size:11px">${humanSize(m.size)}</span>
+      </label>
+    `).join('');
+    hint.textContent = `${_availableModels.length} model bulundu. Embedding modeli: ${data.embed_model_ready ? '✓ hazır (RAG aktif olabilir)' : '✗ yok (nomic-embed-text önerilir)'}`;
+  } catch (e) {
+    list.innerHTML = `<div class="empty" style="grid-column:1/-1">Hata: ${e.message}</div>`;
+  }
+}
+
+function updateLLMChip(idSlug) {
+  const chip = document.getElementById(`llmchip-${idSlug}`);
+  const cb = chip.querySelector('input');
+  chip.classList.toggle('checked', cb.checked);
+}
+
+function getSelectedLLMModels() {
+  return [...document.querySelectorAll('#llmModelList input:checked')].map(c => c.value);
+}
+
+function toggleLLMSection() {
+  const enabled = document.getElementById('llmToggle').checked;
+  const section = document.getElementById('llmSection');
+  if (section) section.style.opacity = enabled ? '1' : '0.45';
+  if (section) section.style.pointerEvents = enabled ? 'auto' : 'none';
+}
+
+async function loadRAGStatus() {
+  const txt = document.getElementById('ragStatusText');
+  if (!txt) return;
+  try {
+    const res = await fetch('/api/rag/status');
+    const data = await res.json();
+    if (data.available) {
+      txt.textContent = `(${data.chunk_count || 0} chunk, ${data.embed_model || ''})`;
+    } else {
+      txt.textContent = '(devre dışı — chromadb veya nomic-embed-text eksik)';
+      const cb = document.getElementById('ragToggle');
+      if (cb) { cb.checked = false; cb.disabled = true; }
+    }
+  } catch {
+    txt.textContent = '';
+  }
+  updateRAGWarning();
+}
+
+function updateRAGWarning() {
+  const cb = document.getElementById('ragToggle');
+  const warn = document.getElementById('ragWarning');
+  if (!cb || !warn) return;
+  // Sadece kullanıcı kapattığında uyar (disabled = altyapı eksik, başka mesaj zaten var)
+  warn.style.display = (!cb.checked && !cb.disabled) ? 'block' : 'none';
+}
+
+function humanSize(bytes) {
+  if (!bytes) return '';
+  const gb = bytes / 1024 / 1024 / 1024;
+  if (gb >= 1) return gb.toFixed(1) + ' GB';
+  const mb = bytes / 1024 / 1024;
+  return mb.toFixed(0) + ' MB';
+}
+
+function cssId(name) {
+  return name.replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+function escAttr(s) {
+  return String(s).replace(/"/g, '&quot;');
 }
 
 function buildModuleGrid() {
@@ -111,12 +210,23 @@ async function startScan() {
   const modules = getSelectedModules();
   if (!modules.length) { alert('En az bir modül seçiniz.'); return; }
 
+  const llmEnabled = document.getElementById('llmToggle').checked;
+  const selectedModels = llmEnabled ? getSelectedLLMModels() : [];
+  if (llmEnabled && !selectedModels.length) {
+    alert('LLM açık ama hiç model seçilmedi. En az bir model seçin veya AI Analizi\'ni kapatın.');
+    return;
+  }
+
   const body = {
     target,
     modules,
-    no_llm: !document.getElementById('llmToggle').checked,
+    no_llm: !llmEnabled,
     cookie: document.getElementById('cookieInput').value.trim() || null,
     timeout: parseInt(document.getElementById('timeoutInput').value) || 5,
+    // Tek model seçildiyse llm_model, birden fazla ise llm_models gönder
+    llm_model: selectedModels.length === 1 ? selectedModels[0] : null,
+    llm_models: selectedModels.length > 1 ? selectedModels : null,
+    use_rag: document.getElementById('ragToggle').checked && !document.getElementById('ragToggle').disabled,
   };
 
   try {
@@ -293,24 +403,115 @@ function buildFindingCard(f, idx) {
         <span class="detail-value">${escHtml(f.response_snippet.substring(0, 300))}</span>
         ` : ''}
       </div>
-      ${buildLLMPanel(f.llm_analysis)}
+      ${buildRAGPanel(f)}
+      ${buildLLMPanel(f)}
     </div>
   `;
   return card;
 }
 
-function buildLLMPanel(llm) {
+function buildRAGPanel(f) {
+  if (!f.rag_used || !f.rag_sources || !f.rag_sources.length) return '';
+  return `
+    <div class="llm-panel" style="border-left:3px solid #8b5cf6;background:rgba(139,92,246,.06)">
+      <h4 style="color:#8b5cf6">📚 RAG — Kullanılan Bilgi Kaynakları</h4>
+      <div class="llm-field" style="font-size:11px;color:var(--color-muted)">
+        ${f.rag_sources.map(s => `<code>${escHtml(s)}</code>`).join(' · ')}
+      </div>
+    </div>
+  `;
+}
+
+function buildLLMPanel(f) {
+  // Çoklu LLM modu
+  if (f.llm_analyses && Object.keys(f.llm_analyses).length > 0) {
+    return buildMultiLLMPanel(f.llm_analyses, f.llm_comparison);
+  }
+  // Tek LLM modu (geriye dönük uyumlu)
+  const llm = f.llm_analysis;
   if (!llm || llm.llm_hatasi) return '';
+  return buildSingleLLMPanel(llm, 'AI Analizi');
+}
+
+function buildSingleLLMPanel(llm, title) {
   const onlemler = (llm.genel_onlemler || []).map(o => `<li>${escHtml(o)}</li>`).join('');
   return `
     <div class="llm-panel">
-      <h4>🤖 AI Analizi</h4>
-      <div class="llm-field"><strong>Risk:</strong> ${escHtml(llm.risk_seviyesi || '')} &nbsp; <strong>Güven:</strong> ${escHtml(llm.llm_guven || '')}</div>
+      <h4>🤖 ${escHtml(title || 'AI Analizi')}</h4>
+      <div class="llm-field"><strong>Risk:</strong> <span class="badge badge-${escAttr(llm.risk_seviyesi || '')}">${escHtml(llm.risk_seviyesi || '')}</span> &nbsp; <strong>Güven:</strong> ${escHtml(llm.llm_guven || '')}</div>
       <div class="llm-field"><strong>Açıklama:</strong> ${escHtml(llm.teknik_aciklama || '')}</div>
       <div class="llm-field"><strong>Düzeltme:</strong> ${escHtml(llm.kod_duzeltme || '')}</div>
       ${onlemler ? `<div class="llm-field"><strong>Önlemler:</strong><ul style="margin:4px 0 0 16px;font-size:12px">${onlemler}</ul></div>` : ''}
     </div>
   `;
+}
+
+function buildMultiLLMPanel(analyses, comparison) {
+  const models = Object.keys(analyses);
+  const tabId = 'tabs_' + Math.random().toString(36).slice(2, 8);
+
+  // Konsensüs özeti
+  let consensusHtml = '';
+  if (comparison) {
+    const votes = comparison.risk_votes || {};
+    const voteText = Object.entries(votes)
+      .map(([risk, count]) => `<span class="badge badge-${escAttr(risk)}">${escHtml(risk)} ×${count}</span>`)
+      .join(' ');
+    consensusHtml = `
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:8px 10px;background:rgba(34,197,94,.08);border-radius:6px;border-left:3px solid #22c55e">
+        <div><strong>Konsensüs:</strong> <span class="badge badge-${escAttr(comparison.risk_consensus)}">${escHtml(comparison.risk_consensus || '?')}</span></div>
+        <div style="font-size:12px;color:var(--color-muted)">Oylar: ${voteText || '—'}</div>
+        ${comparison.error_count ? `<div style="font-size:12px;color:#ef4444">Hatalı: ${comparison.error_count}</div>` : ''}
+      </div>
+    `;
+  }
+
+  // Sekme başlıkları
+  const tabs = models.map((m, i) => {
+    const a = analyses[m] || {};
+    const errMark = a.llm_hatasi ? ' ⚠' : '';
+    return `<button class="llm-tab${i === 0 ? ' active' : ''}" onclick="switchLLMTab('${tabId}', ${i}, this)">${escHtml(m)}${errMark}</button>`;
+  }).join('');
+
+  // Sekme içerikleri
+  const panes = models.map((m, i) => {
+    const a = analyses[m] || {};
+    if (a.llm_hatasi) {
+      return `
+        <div class="llm-tab-pane${i === 0 ? ' active' : ''}">
+          <div style="color:#ef4444;font-size:13px">⚠ Bu model yanıt veremedi: ${escHtml(a.hata_nedeni || 'bilinmiyor')}</div>
+        </div>
+      `;
+    }
+    const onlemler = (a.genel_onlemler || []).map(o => `<li>${escHtml(o)}</li>`).join('');
+    return `
+      <div class="llm-tab-pane${i === 0 ? ' active' : ''}">
+        <div class="llm-field"><strong>Risk:</strong> <span class="badge badge-${escAttr(a.risk_seviyesi || '')}">${escHtml(a.risk_seviyesi || '')}</span> &nbsp; <strong>Güven:</strong> ${escHtml(a.llm_guven || '')}</div>
+        <div class="llm-field"><strong>Açıklama:</strong> ${escHtml(a.teknik_aciklama || '')}</div>
+        <div class="llm-field"><strong>Düzeltme:</strong> ${escHtml(a.kod_duzeltme || '')}</div>
+        ${onlemler ? `<div class="llm-field"><strong>Önlemler:</strong><ul style="margin:4px 0 0 16px;font-size:12px">${onlemler}</ul></div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="llm-panel" id="${tabId}">
+      <h4>🤖 Çoklu LLM Karşılaştırması <span style="color:var(--color-muted);font-weight:400;font-size:12px">(${models.length} model)</span></h4>
+      ${consensusHtml}
+      <div class="llm-tabs">${tabs}</div>
+      <div class="llm-tab-panes">${panes}</div>
+    </div>
+  `;
+}
+
+function switchLLMTab(tabId, idx, btn) {
+  const root = document.getElementById(tabId);
+  if (!root) return;
+  root.querySelectorAll('.llm-tab').forEach(t => t.classList.remove('active'));
+  root.querySelectorAll('.llm-tab-pane').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  const panes = root.querySelectorAll('.llm-tab-pane');
+  if (panes[idx]) panes[idx].classList.add('active');
 }
 
 function toggleCard(header) {
@@ -441,7 +642,11 @@ function reportToText(report) {
   out += `Tarih        : ${info.timestamp || ''}\n`;
   out += `Süre         : ${info.duration_seconds || 0} saniye\n`;
   out += `Modüller     : ${(info.modules_run || []).join(', ')}\n`;
-  out += `LLM          : ${info.llm_enabled ? info.llm_model : 'Kapalı'}\n`;
+  const llmLabel = info.llm_enabled
+    ? (info.llm_models && info.llm_models.length ? info.llm_models.join(', ') : (info.llm_model || ''))
+    : 'Kapalı';
+  out += `LLM          : ${llmLabel}\n`;
+  out += `RAG          : ${info.rag_enabled ? 'Açık' : 'Kapalı'}\n`;
   out += `Toplam Bulgu : ${sum.total_findings || 0}\n\n`;
   out += `Önem Dağılımı:\n`;
   ['Kritik', 'Yüksek', 'Orta', 'Düşük', 'Bilgilendirici'].forEach(s => {
@@ -460,7 +665,33 @@ function reportToText(report) {
     if (f.response_snippet) {
       out += `    Yanıt    : ${f.response_snippet.substring(0, 200).replace(/\n/g, ' ')}\n`;
     }
-    if (f.llm_analysis && !f.llm_analysis.llm_hatasi) {
+    if (f.rag_used && f.rag_sources && f.rag_sources.length) {
+      out += `    RAG Kaynak: ${f.rag_sources.join(', ')}\n`;
+    }
+    // Çoklu LLM
+    if (f.llm_analyses && Object.keys(f.llm_analyses).length) {
+      if (f.llm_comparison) {
+        out += `    Konsensüs : ${f.llm_comparison.risk_consensus || '?'}`;
+        const votes = f.llm_comparison.risk_votes || {};
+        const voteStr = Object.entries(votes).map(([k, v]) => `${k}×${v}`).join(', ');
+        if (voteStr) out += ` (${voteStr})`;
+        out += '\n';
+      }
+      Object.entries(f.llm_analyses).forEach(([model, l]) => {
+        out += `    ── ${model} ──\n`;
+        if (l.llm_hatasi) {
+          out += `      ⚠ Yanıt alınamadı: ${l.hata_nedeni || 'bilinmiyor'}\n`;
+          return;
+        }
+        out += `      Risk     : ${l.risk_seviyesi || ''}\n`;
+        out += `      Açıklama : ${l.teknik_aciklama || ''}\n`;
+        out += `      Düzeltme : ${l.kod_duzeltme || ''}\n`;
+        if (l.genel_onlemler && l.genel_onlemler.length) {
+          out += `      Önlemler :\n`;
+          l.genel_onlemler.forEach(o => out += `        • ${o}\n`);
+        }
+      });
+    } else if (f.llm_analysis && !f.llm_analysis.llm_hatasi) {
       const l = f.llm_analysis;
       out += `    AI ANALIZ:\n`;
       out += `      Risk     : ${l.risk_seviyesi || ''}\n`;

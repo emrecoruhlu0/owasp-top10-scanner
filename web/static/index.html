@@ -49,11 +49,36 @@
             <input type="number" id="timeoutInput" value="5" min="1" max="60" style="margin-bottom:6px" />
             <div class="toggle-row">
               <label class="toggle">
-                <input type="checkbox" id="llmToggle" checked />
+                <input type="checkbox" id="llmToggle" checked onchange="toggleLLMSection()" />
                 <span class="toggle-slider"></span>
               </label>
               <span style="font-size:13px">AI Analizi (LLM)</span>
             </div>
+          </div>
+        </div>
+
+        <!-- LLM ve RAG seçenekleri -->
+        <div id="llmSection" style="margin-top:14px;padding:12px;border:1px solid var(--color-border);border-radius:8px;background:rgba(79,142,247,.04)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <label style="margin:0">🤖 LLM Modelleri <span style="color:var(--color-muted);font-weight:400;font-size:12px">(1+ seçin — birden fazla seçerseniz karşılaştırma yapılır)</span></label>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadLLMModels()" title="Ollama'dan listeyi yenile">⟳ Modelleri Yenile</button>
+          </div>
+          <div id="llmModelList" class="module-grid">
+            <div class="empty" style="grid-column:1/-1">Yükleniyor...</div>
+          </div>
+          <div id="llmModelHint" style="font-size:11px;color:var(--color-muted);margin-top:8px"></div>
+
+          <div style="margin-top:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <div class="toggle-row">
+              <label class="toggle">
+                <input type="checkbox" id="ragToggle" checked onchange="updateRAGWarning()" />
+                <span class="toggle-slider"></span>
+              </label>
+              <span style="font-size:13px">📚 RAG ile zenginleştir <span id="ragStatusText" style="color:var(--color-muted)"></span></span>
+            </div>
+          </div>
+          <div id="ragWarning" style="display:none;margin-top:10px;padding:8px 12px;background:rgba(220,53,69,.12);border-left:3px solid var(--color-kritik);border-radius:4px;font-size:12px;color:var(--color-kritik)">
+            ⚠ RAG kapalı — LLM yorumları sadece prompt'taki örneklere dayanır, yanıt kalitesi düşer ve alakasız öneriler gelebilir.
           </div>
         </div>
 

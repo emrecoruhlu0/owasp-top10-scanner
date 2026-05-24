@@ -29,6 +29,8 @@ OWASP Top 10 (2021) kategorilerini hedefleyen, yerel LLM (Ollama) ile zenginleş
 - **Hazır test ortamları** — DVWA + Juice Shop + WebGoat tek `docker compose` ile ayağa kalkar
 - **DVWA otomatik setup** — Veritabanı kurulumu + login + cookie alma tek tıkla
 - **AI analizi** — Tespit edilen her bulgu için Türkçe risk açıklaması, düzeltme kodu, önlem listesi
+- **Çoklu LLM karşılaştırması** — Aynı bulguyu birden fazla modele paralel sorup konsensüs üretir
+- **RAG (knowledge base)** — OWASP markdown bilgi tabanı ChromaDB + `nomic-embed-text` ile indekslenir, LLM yanıtları bulguya özel referanslarla zenginleşir
 - **Çoklu çıktı formatı** — JSON, TXT, yazdırma/PDF, panoya kopyala
 - **Tarama geçmişi** — Son 20 taramaya ana sayfadan erişim
 - **Eş zamanlı tarama** — Aynı anda 3 farklı hedef taranabilir
@@ -103,22 +105,64 @@ OWASP Top 10 (2021) kategorilerini hedefleyen, yerel LLM (Ollama) ile zenginleş
 ### Önkoşullar
 
 - Docker Desktop (Windows/macOS) veya Docker Engine + Compose (Linux)
-- ~4 GB boş disk (test ortamı image'ları için)
+- ~10 GB boş disk (LLM modeli + test ortamları + RAG)
 
-### Tek komutla başlat
+### 1. LLM modellerini seç (.env dosyası)
 
 ```bash
-# Sadece tarayıcı + web arayüzü + Ollama
-docker compose up --build
+cp .env.example .env
+```
+
+`.env` dosyasını açıp `OLLAMA_PULL_MODELS` satırını ihtiyacına göre düzenle. Örnekler:
+
+```bash
+# Minimum kurulum (~5 GB) — sadece llama3 + RAG için embedding
+OLLAMA_PULL_MODELS=llama3 nomic-embed-text
+
+# Küçük modellerle çoklu karşılaştırma (~6 GB) — ders sunumu için ideal
+OLLAMA_PULL_MODELS=qwen2.5:3b phi3:mini gemma2:2b nomic-embed-text
+
+# Tam karşılaştırma kurulumu (~15 GB)
+OLLAMA_PULL_MODELS=llama3 qwen2.5:7b mistral phi3:mini nomic-embed-text
+```
+
+> **`nomic-embed-text` listede olmazsa RAG (knowledge base zenginleştirme) devre dışı kalır.** Sadece 274 MB; bırakman önerilir.
+
+`.env` dosyası oluşturmadan da çalışır — varsayılan olarak `llama3 + nomic-embed-text` indirilir.
+
+### 2. Başlat
+
+```bash
+# Sadece tarayıcı + web arayüzü + Ollama (modeller otomatik indirilir)
+docker compose up -d --build
 
 # + DVWA, Juice Shop, WebGoat test ortamlarıyla birlikte
-docker compose -f docker-compose.yml -f docker-compose.test.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
 ```
 
-Sonra tarayıcıda:
+İlk başlatmada `ollama-init` servisi `.env`'deki modelleri indirir (5-15 dakika, internet hızına göre). Sonraki başlatmalarda saniyeler içinde hazır.
+
+### 3. Web arayüzüne gir
 
 ```
-http://localhost:8090
+http://localhost:9000
+```
+
+(Port `.env` içindeki `WEB_PORT` değişkeniyle değiştirilebilir.)
+
+### 4. (Opsiyonel) Sonradan model eklemek
+
+`.env`'de `OLLAMA_PULL_MODELS` listesini güncelle ve şunu çalıştır:
+
+```bash
+docker compose up -d ollama-init
+```
+
+`ollama-init` mevcut modelleri atlar, sadece yeni olanları indirir. Web UI'da **"⟳ Modelleri Yenile"** butonuyla dropdown güncellenir.
+
+Veya doğrudan:
+```bash
+docker compose exec ollama ollama pull <model-adı>
 ```
 
 ---
@@ -164,10 +208,15 @@ docker run --rm --network guvenlik_proje_internal \
     guvenlik_proje-scanner \
     -u http://dvwa/ --modules A03 --no-llm
 
-# Veya yerel Python ile (bağımlılıkları kur)
-cd guvenlik_proje
+# Veya yerel Python ile
+
+# Hepsi bir arada (scanner + web UI bağımlılıkları):
 pip install -r requirements.txt
-python main.py -u http://hedef --modules A01,A03 -o rapor.json
+
+# Yalnız CLI scanner için:
+pip install -r guvenlik_proje/requirements.txt
+
+python guvenlik_proje/main.py -u http://hedef --modules A01,A03 -o rapor.json
 ```
 
 ### CLI argümanları
@@ -178,11 +227,38 @@ python main.py -u http://hedef --modules A01,A03 -o rapor.json
 | `-o, --output` | Çıktı JSON dosyası | `rapor.json` |
 | `--modules` | Virgülle ayrılmış modül ID'leri veya `all` | `all` |
 | `--no-llm` | LLM analizini devre dışı bırak | açık |
-| `--llm-model` | Ollama model adı | `llama3` |
+| `--llm-model` | Tek Ollama model adı | `llama3` |
+| `--llm-models` | Çoklu model karşılaştırması (virgülle ayrılmış) | yok |
+| `--rag` / `--no-rag` | OWASP knowledge base ile zenginleştirme | açık |
+| `--knowledge-dir` | Knowledge markdown dizini | `./knowledge` |
+| `--rag-db-path` | RAG vektör DB dizini | `./rag_db` |
+| `--rag-top-k` | Her bulgu için çekilecek chunk sayısı | `3` |
 | `--cookie` | Oturum çerezleri | yok |
 | `--timeout` | HTTP zaman aşımı (saniye) | `5` |
 | `--proxy` | Proxy URL | yok |
 | `--verbose` | DEBUG seviyesi log | kapalı |
+
+### Çoklu LLM ve RAG örnekleri
+
+```bash
+# Üç modeli karşılaştır (her bulgu için 3 yorum + konsensüs)
+python guvenlik_proje/main.py -u http://localhost/dvwa \
+    --llm-models llama3,qwen2.5:3b,phi3:mini
+
+# RAG kapalı, tek model
+python guvenlik_proje/main.py -u http://hedef --no-rag --llm-model llama3
+```
+
+### Yerel çalıştırma için ortam değişkenleri (opsiyonel)
+
+Web arayüzünü Docker dışında çalıştırırken aşağıdaki değişkenlerle yolları geçersiz kılabilirsiniz:
+
+| Değişken | Açıklama |
+|----------|----------|
+| `SCANNER_MAIN_PY` | `main.py`'nin mutlak yolu (varsayılan: otomatik tespit) |
+| `SCANNER_PYTHON` | Subprocess için Python yorumlayıcısı (varsayılan: `sys.executable`) |
+| `SCANS_DIR` | Rapor JSON'larının yazılacağı dizin (varsayılan: sistem temp) |
+| `OLLAMA_HOST` | Ollama API URL'si (varsayılan: `http://localhost:11434`) |
 
 ### Çıkış kodları
 
@@ -253,20 +329,26 @@ LLM erişilemezse `llm_hatasi: true` döner ve tarama yine tamamlanır.
 
 ```
 guvenlik_proje/
+├── requirements.txt             # Birleşik kurulum (scanner + web)
+├── .env.example                 # OLLAMA_PULL_MODELS, WEB_PORT, MAX_CONCURRENT_SCANS
+│
 ├── guvenlik_proje/              # Çekirdek tarayıcı (CLI)
 │   ├── main.py                  # Orkestratör + argparse
-│   ├── requirements.txt
+│   ├── requirements.txt         # Yalnız scanner bağımlılıkları
 │   ├── core/
 │   │   ├── base_module.py       # BaseModule ABC, Finding, Severity, Confidence
 │   │   ├── http_client.py       # requests.Session + retry + UA rotation
-│   │   └── llm_client.py        # Ollama /api/generate istemcisi
+│   │   ├── llm_client.py        # Ollama /api/generate istemcisi (RAG context destekli)
+│   │   ├── multi_llm.py         # Çoklu Ollama modeli paralel sorgu + konsensüs
+│   │   └── rag.py               # ChromaDB + nomic-embed-text knowledge base
+│   ├── knowledge/               # OWASP markdown bilgi tabanı (A01..A10)
 │   └── modules/
 │       └── A01..A10_*.py        # OWASP modülleri
 │
 ├── web/                         # Web arayüzü
 │   ├── app.py                   # FastAPI: endpoint'ler + WebSocket
 │   ├── scan_manager.py          # Subprocess yönetimi + log parse + WS broadcast
-│   ├── requirements.txt
+│   ├── requirements.txt         # Yalnız web bağımlılıkları
 │   └── static/
 │       ├── index.html           # Ana sayfa: form, geçmiş, canlı log
 │       ├── report.html          # Filtrelenebilir rapor görüntüleyici

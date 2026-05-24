@@ -55,17 +55,23 @@ class Finding:
     Bir tespit edilen güvenlik bulgusunu temsil eder.
 
     Attributes:
-        owasp_id        : OWASP Top 10 kimliği (örn. "A03").
-        title           : Zafiyet başlığı (örn. "SQL Injection").
-        url             : Zafiyetin gözlemlendiği URL.
-        parameter       : Etkilenen parametre adı.
-        payload         : Tespit için kullanılan payload.
-        method          : HTTP metodu ("GET" veya "POST").
-        response_snippet: Zafiyeti kanıtlayan yanıt parçası.
-        confidence      : Statik analizin güven seviyesi.
-        severity        : Ön değerlendirme ciddiyet seviyesi.
-        raw_details     : Modüle özgü ek veriler.
-        llm_analysis    : LLM'den dönen zenginleştirilmiş analiz (opsiyonel).
+        owasp_id         : OWASP Top 10 kimliği (örn. "A03").
+        title            : Zafiyet başlığı (örn. "SQL Injection").
+        url              : Zafiyetin gözlemlendiği URL.
+        parameter        : Etkilenen parametre adı.
+        payload          : Tespit için kullanılan payload.
+        method           : HTTP metodu ("GET" veya "POST").
+        response_snippet : Zafiyeti kanıtlayan yanıt parçası.
+        confidence       : Statik analizin güven seviyesi.
+        severity         : Ön değerlendirme ciddiyet seviyesi.
+        raw_details      : Modüle özgü ek veriler.
+        llm_analysis     : Tek LLM modundan dönen analiz (geriye dönük uyumluluk).
+        llm_analyses     : Çoklu LLM modunda her modelin analizi
+                           {"llama3": {...}, "qwen2.5:7b": {...}}.
+        llm_comparison   : Çoklu LLM modunda özet karşılaştırma
+                           (risk_consensus, risk_votes, ...).
+        rag_used         : Bu bulguda RAG bağlamı kullanıldı mı?
+        rag_sources      : Kullanılan knowledge base chunk kaynaklarının listesi.
     """
     owasp_id: str
     title: str
@@ -78,6 +84,10 @@ class Finding:
     severity: Severity = Severity.MEDIUM
     raw_details: Dict[str, Any] = field(default_factory=dict)
     llm_analysis: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    llm_analyses: Optional[Dict[str, Dict[str, Any]]] = field(default=None, repr=False)
+    llm_comparison: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    rag_used: bool = False
+    rag_sources: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Finding'i JSON-serileştirilebilir bir sözlüğe dönüştürür."""

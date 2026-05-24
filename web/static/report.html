@@ -98,8 +98,16 @@
         })
       ].join('');
 
+      const llmLabel = info.llm_enabled
+        ? (info.llm_models && info.llm_models.length
+            ? info.llm_models.join(', ')
+            : (info.llm_model || 'aktif'))
+        : 'Kapalı';
+      const ragLabel = info.rag_enabled
+        ? `Açık${info.rag_stats && info.rag_stats.chunk_count ? ' (' + info.rag_stats.chunk_count + ' chunk)' : ''}`
+        : 'Kapalı';
       document.getElementById('scanMeta').innerHTML =
-        `Tarama zamanı: ${info.timestamp || '—'} &nbsp;|&nbsp; Modeller: ${(info.modules_run || []).join(', ')} &nbsp;|&nbsp; LLM: ${info.llm_enabled ? info.llm_model : 'Kapalı'}`;
+        `Tarama zamanı: ${info.timestamp || '—'} &nbsp;|&nbsp; Modüller: ${(info.modules_run || []).join(', ')} &nbsp;|&nbsp; LLM: ${llmLabel} &nbsp;|&nbsp; RAG: ${ragLabel}`;
 
       document.getElementById('summaryCard').style.display = 'block';
 

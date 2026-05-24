@@ -179,6 +179,26 @@ class A03InjectionModule(BaseModule):
 
         return endpoints
 
+    # DVWA ve yaygın test ortamları için bilinen zafiyetli path'ler.
+    # Crawler yoksa A03 bu sayfaları otomatik dener — kara kutu tarama için
+    # makul varsayılan davranış.
+    _COMMON_INJECTION_PATHS: List[tuple[str, str, str]] = [
+        # path, param, method
+        ("vulnerabilities/sqli/",            "id",       "GET"),
+        ("vulnerabilities/sqli_blind/",      "id",       "GET"),
+        ("vulnerabilities/xss_r/",           "name",     "GET"),
+        ("vulnerabilities/xss_s/",           "txtName",  "POST"),
+        ("vulnerabilities/xss_d/",           "default",  "GET"),
+        ("vulnerabilities/exec/",            "ip",       "POST"),
+        ("vulnerabilities/brute/",           "username", "GET"),
+        # Juice Shop tipik query parametreleri
+        ("rest/products/search",             "q",        "GET"),
+        # Genel
+        ("search",                           "q",        "GET"),
+        ("search.php",                       "q",        "GET"),
+        ("index.php",                        "id",       "GET"),
+    ]
+
     def _discover_from_target(self) -> List[tuple[str, str, str, Dict[str, str]]]:
         """Hedef URL'yi GET ile çeker, formları ve GET parametrelerini çıkarır."""
         results: List[tuple[str, str, str, Dict[str, str]]] = []
@@ -210,7 +230,27 @@ class A03InjectionModule(BaseModule):
         except Exception as exc:
             self.logger.debug("Form ayrıştırma hatası: %s", exc)
 
-        # Hiç parametre bulunamazsa hedef URL'yi direkt dene
+        # Yaygın zafiyetli path'leri otomatik dene (DVWA/Juice Shop/genel)
+        # Sadece şu durumda eklenir:
+        #   - 200 OK döner ve
+        #   - login/redirect sayfasına yönlendirmemiştir.
+        for path, param, method in self._COMMON_INJECTION_PATHS:
+            url = urljoin(self.target + "/", path)
+            probe = self._safe_get(url)
+            if probe is None or probe.status_code >= 400:
+                continue
+            # Login veya error sayfasına yönlendirildiyse (DVWA için tipik) atla
+            final_url = (probe.url or "").lower()
+            if any(skip in final_url for skip in ("login.php", "login.html", "signin", "/auth")):
+                self.logger.debug("A03: %s -> login redirect, atlanıyor", url)
+                continue
+            if method == "GET":
+                results.append((url, param, "GET", {}))
+            else:
+                results.append((url, param, "POST", {param: "test"}))
+            self.logger.debug("A03: erişilebilir endpoint eklendi: %s (%s)", url, param)
+
+        # Hâlâ hiç parametre bulunamazsa hedef URL'yi direkt dene
         if not results:
             self.logger.warning(
                 "Hedef URL'de GET parametresi veya form bulunamadı. "
