@@ -12,19 +12,65 @@ import json
 import logging
 import os
 import re
+import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT_SCANS = int(os.environ.get("MAX_CONCURRENT_SCANS", "3"))
-SCANS_DIR = "/tmp/scans"
 LOG_BUFFER_SIZE = 500
 
-MAIN_PY_PATH = "/app/guvenlik_proje/main.py"
-MAIN_PY_CWD = "/app/guvenlik_proje"
+
+def _resolve_main_py() -> tuple[str, str]:
+    """
+    main.py'nin yolunu ve çalışma dizinini çözer.
+
+    Öncelik sırası:
+      1. SCANNER_MAIN_PY env var (mutlak yol)
+      2. Docker konteyner yolu (/app/guvenlik_proje/main.py) varsa
+      3. Repo köküne göre türetilen yol (web/'in kardeşi guvenlik_proje/)
+    """
+    env_path = os.environ.get("SCANNER_MAIN_PY")
+    if env_path:
+        p = Path(env_path).resolve()
+        return str(p), str(p.parent)
+
+    docker_path = Path("/app/guvenlik_proje/main.py")
+    if docker_path.exists():
+        return str(docker_path), str(docker_path.parent)
+
+    # web/scan_manager.py → repo_root/guvenlik_proje/main.py
+    repo_root = Path(__file__).resolve().parent.parent
+    local_path = repo_root / "guvenlik_proje" / "main.py"
+    return str(local_path), str(local_path.parent)
+
+
+def _resolve_scans_dir() -> str:
+    """
+    Rapor JSON'larının yazılacağı dizini çözer.
+
+    Öncelik: SCANS_DIR env var → Docker /tmp/scans → sistem temp.
+    """
+    env_dir = os.environ.get("SCANS_DIR")
+    if env_dir:
+        Path(env_dir).mkdir(parents=True, exist_ok=True)
+        return env_dir
+    if sys.platform != "win32" and Path("/tmp").is_dir():
+        d = "/tmp/scans"
+    else:
+        d = str(Path(tempfile.gettempdir()) / "guvenlik_proje_scans")
+    Path(d).mkdir(parents=True, exist_ok=True)
+    return d
+
+
+MAIN_PY_PATH, MAIN_PY_CWD = _resolve_main_py()
+SCANS_DIR = _resolve_scans_dir()
+PYTHON_EXECUTABLE = os.environ.get("SCANNER_PYTHON", sys.executable)
 
 ALL_MODULES = ["A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09", "A10"]
 
@@ -113,7 +159,24 @@ async def start_scan(
     no_llm: bool = False,
     cookie: Optional[str] = None,
     timeout: int = 5,
+    llm_model: Optional[str] = None,
+    llm_models: Optional[List[str]] = None,
+    use_rag: bool = True,
 ) -> str:
+    """
+    Yeni bir tarama işi başlatır.
+
+    Args:
+        target     : Hedef URL.
+        modules    : Çalıştırılacak modül ID'leri.
+        no_llm     : True ise LLM analizi yapılmaz.
+        cookie     : Oturum çerezleri.
+        timeout    : HTTP istek zaman aşımı.
+        llm_model  : Tek-model modu için Ollama model adı.
+        llm_models : Çoklu LLM modu için model adı listesi. Verildiyse
+                     llm_model yok sayılır.
+        use_rag    : True ise OWASP knowledge base ile zenginleştirme.
+    """
     if running_count() >= MAX_CONCURRENT_SCANS:
         raise RuntimeError("too_many_scans")
 
@@ -129,7 +192,9 @@ async def start_scan(
     )
     _jobs[scan_id] = job
 
-    job.task = asyncio.create_task(_run_scan(job, no_llm, cookie, timeout))
+    job.task = asyncio.create_task(
+        _run_scan(job, no_llm, cookie, timeout, llm_model, llm_models, use_rag)
+    )
     return scan_id
 
 
@@ -158,12 +223,15 @@ async def _run_scan(
     no_llm: bool,
     cookie: Optional[str],
     timeout: int,
+    llm_model: Optional[str] = None,
+    llm_models: Optional[List[str]] = None,
+    use_rag: bool = True,
 ) -> None:
     scan_id = job.scan_id
-    report_path = f"{SCANS_DIR}/{scan_id}.json"
+    report_path = str(Path(SCANS_DIR) / f"{scan_id}.json")
 
     cmd = [
-        "python", MAIN_PY_PATH,
+        PYTHON_EXECUTABLE, MAIN_PY_PATH,
         "-u", job.target,
         "-o", report_path,
         "--modules", ",".join(job.modules),
@@ -171,6 +239,15 @@ async def _run_scan(
     ]
     if no_llm:
         cmd.append("--no-llm")
+    else:
+        # Çoklu LLM modu tek-model'i geçersiz kılar
+        if llm_models:
+            cmd += ["--llm-models", ",".join(llm_models)]
+        elif llm_model:
+            cmd += ["--llm-model", llm_model]
+        # RAG: varsayılan açık, kapatmak için bayrak gerekiyor
+        if not use_rag:
+            cmd.append("--no-rag")
     if cookie:
         cmd += ["--cookie", cookie]
 
