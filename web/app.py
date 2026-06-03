@@ -38,10 +38,14 @@ class ScanRequest(BaseModel):
     no_llm: bool = False
     cookie: Optional[str] = None
     timeout: int = 5
-    # Yeni alanlar — çoklu LLM ve RAG
     llm_model: Optional[str] = None
     llm_models: Optional[List[str]] = None
     use_rag: bool = True
+
+
+class VerdictRequest(BaseModel):
+    key: str
+    verdict: Optional[str] = None  # "tp" | "fp" | null (sıfırlamak için)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +185,22 @@ async def cancel_scan(scan_id: str):
     return {"cancelled": True}
 
 
+@app.patch("/api/scan/{scan_id}/verdict")
+async def set_verdict(scan_id: str, req: VerdictRequest):
+    ok = scan_manager.save_verdict(scan_id, req.key, req.verdict)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tarama bulunamadı.")
+    return {"ok": True}
+
+
+@app.get("/api/scan/{scan_id}/verdicts")
+async def get_verdicts(scan_id: str):
+    verdicts = scan_manager.get_verdicts(scan_id)
+    if verdicts is None:
+        raise HTTPException(status_code=404, detail="Tarama bulunamadı.")
+    return {"verdicts": verdicts}
+
+
 @app.get("/api/scan/{scan_id}/report")
 async def get_report(scan_id: str):
     job = scan_manager.get_job(scan_id)
@@ -240,24 +260,30 @@ async def dvwa_setup():
 
 @app.get("/api/targets")
 async def list_targets():
+    # Hedef URL'leri env'den çözülür. Docker-compose içinde servis adları
+    # (dvwa, juice-shop, webgoat) DNS ile çözülür; yerel (uvicorn) çalıştırmada
+    # bu adlar çözülmediği için localhost'a düşülür ve port env ile ayarlanabilir.
+    dvwa_url = os.environ.get("TARGET_DVWA_URL", "http://dvwa/")
+    juice_url = os.environ.get("TARGET_JUICE_URL", "http://juice-shop:3000/")
+    webgoat_url = os.environ.get("TARGET_WEBGOAT_URL", "http://webgoat:8080/WebGoat/")
     targets = [
         {
             "name": "DVWA",
-            "url": "http://dvwa/",
+            "url": dvwa_url,
             "description": "Damn Vulnerable Web Application — PHP/MySQL tabanlı klasik test ortamı",
             "note": "Cookie gerekli: PHPSESSID=...; security=low",
             "modules": ["A01", "A03", "A07", "A10"],
         },
         {
             "name": "Juice Shop",
-            "url": "http://juice-shop:3000/",
+            "url": juice_url,
             "description": "OWASP Juice Shop — modern Node.js/Angular tabanlı test ortamı",
             "note": "",
             "modules": ["A02", "A05", "A06", "A08"],
         },
         {
             "name": "WebGoat",
-            "url": "http://webgoat:8080/WebGoat/",
+            "url": webgoat_url,
             "description": "OWASP WebGoat — Java tabanlı, eğitim odaklı test ortamı",
             "note": "",
             "modules": ["A07", "A08", "A09"],

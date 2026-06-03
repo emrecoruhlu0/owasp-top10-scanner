@@ -91,7 +91,7 @@ _RE_MODULE_BEGIN = re.compile(r"Modül başlatılıyor[:\s]+([A-Z]\d{2})", re.IG
 _RE_MODULE_DONE = re.compile(
     r"Modül tamamlandı[:\s]+([A-Z]\d{2})[^\d]*(\d+)\s*bulgu", re.IGNORECASE
 )
-_RE_FINDING = re.compile(r"\[FINDING\]", re.IGNORECASE)
+_RE_FINDING_READY = re.compile(r"^\[FINDING_READY\]\s+(.+)$")
 
 
 @dataclass
@@ -106,6 +106,7 @@ class ScanJob:
     report: Optional[Dict[str, Any]] = None
     log_buffer: List[str] = field(default_factory=list)
     task: Optional[asyncio.Task] = None
+    verdicts: Dict[str, str] = field(default_factory=dict)  # finding_key → "tp" | "fp"
 
 
 _jobs: Dict[str, ScanJob] = {}
@@ -114,6 +115,35 @@ _connections: Dict[str, List[Any]] = {}  # scan_id → list[WebSocket]
 
 def get_job(scan_id: str) -> Optional[ScanJob]:
     return _jobs.get(scan_id)
+
+
+def save_verdict(scan_id: str, key: str, verdict: Optional[str]) -> bool:
+    job = _jobs.get(scan_id)
+    if not job:
+        return False
+    if verdict:
+        job.verdicts[key] = verdict
+    else:
+        job.verdicts.pop(key, None)
+    # Rapor dosyası varsa verdicts alanını güncelle
+    report_path = str(Path(SCANS_DIR) / f"{scan_id}.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["verdicts"] = job.verdicts
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("Verdict kaydedilemedi: %s", exc)
+    return True
+
+
+def get_verdicts(scan_id: str) -> Optional[Dict[str, str]]:
+    job = _jobs.get(scan_id)
+    if not job:
+        return None
+    return job.verdicts
 
 
 def list_jobs(limit: int = 20) -> List[ScanJob]:
@@ -260,12 +290,18 @@ async def _run_scan(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
 
+    # Child Python'u UTF-8 modunda çalıştır: aksi hâlde Windows konsol kod
+    # sayfası (ör. cp1254) main.py'nin logladığı ━/→ gibi karakterlerde
+    # UnicodeEncodeError verir. Parent stdout'u zaten utf-8 decode ediyor.
+    child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=MAIN_PY_CWD,
+            env=child_env,
         )
         job.process = proc
 
@@ -294,6 +330,11 @@ async def _run_scan(
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 report = json.load(f)
+            # Tarama sırasında kaydedilen verdict'leri rapora ekle
+            if job.verdicts:
+                report["verdicts"] = job.verdicts
+                with open(report_path, "w", encoding="utf-8") as f:
+                    json.dump(report, f, ensure_ascii=False, indent=2)
             job.report = report
         except Exception as exc:
             logger.warning("Rapor okunamadı: %s", exc)
@@ -312,6 +353,14 @@ async def _run_scan(
 
 
 def _parse_line(line: str) -> Dict[str, Any]:
+    m = _RE_FINDING_READY.match(line)
+    if m:
+        try:
+            finding = json.loads(m.group(1))
+            return {"type": "finding_enriched", "finding": finding}
+        except json.JSONDecodeError:
+            pass
+
     m = _RE_MODULE_BEGIN.search(line)
     if m:
         mod = m.group(1).upper()
