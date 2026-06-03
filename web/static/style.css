@@ -366,3 +366,85 @@ textarea { resize: vertical; min-height: 60px; font-family: monospace; }
 .llm-tab-pane.active {
   display: block;
 }
+
+/* ---------- Önem dağılım grafiği (donut) ---------- */
+.summary-flex {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+.severity-chart {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.chart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.legend-item {
+  display: grid;
+  grid-template-columns: 12px auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.legend-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.legend-num { font-weight: 700; }
+.legend-pct { color: var(--color-muted); text-align: right; }
+
+@media (max-width: 640px) {
+  .summary-flex { flex-direction: column; align-items: flex-start; }
+}
+
+/* ---------- Yazdırma / PDF ---------- */
+@media print {
+  /* Ekrana özgü kontrolleri gizle */
+  .no-print,
+  .filter-bar,
+  header .btn,
+  header a.btn { display: none !important; }
+
+  /* Koyu temayı beyaz kağıda çevir — mürekkep tasarrufu + okunabilirlik */
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #ffffff;
+    --color-text: #1a1a1a;
+    --color-muted: #555;
+    --color-border: #ccc;
+  }
+  body {
+    background: #fff !important;
+    color: #1a1a1a !important;
+    font-size: 11px;
+  }
+  header {
+    border-bottom: 2px solid #333;
+    position: static;
+  }
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #ddd !important;
+    break-inside: avoid;
+  }
+  /* Tüm bulgu kartlarını açık göster — yazdırırken hiçbiri katlı kalmasın */
+  .finding-body { display: block !important; }
+  .finding-card {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    border: 1px solid #ddd !important;
+  }
+  .chevron { display: none; }
+  /* Çoklu LLM sekmelerini yazdırmada hepsini açık göster */
+  .llm-tab-pane { display: block !important; }
+  .llm-tabs { display: none; }
+  .llm-tab-pane + .llm-tab-pane { border-top: 1px dashed #ccc; padding-top: 8px; }
+  a { color: #1a1a1a; text-decoration: none; }
+}

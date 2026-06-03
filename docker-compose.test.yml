@@ -13,7 +13,10 @@ services:
     environment:
       - MYSQL_PASS=dvwa
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/login.php"]
+      # DVWA imajinda curl/wget yok; sadece php var. login.php'ye HTTP istegi
+      # atip 200 dondurdugunu php ile dogruluyoruz.
+      # Not: Compose degisken interpolasyonu icin $ -> $$ olarak escape edildi.
+      test: ["CMD-SHELL", "php -r '$$h=@get_headers(\"http://localhost/login.php\"); exit(($$h && strpos($$h[0],\"200\")!==false)?0:1);'"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -30,6 +33,14 @@ services:
 
   webgoat:
     image: webgoat/webgoat
+    # Imajin kendi healthcheck'i 'curl' kullaniyor ama imajda curl yok (wget var).
+    # Override ediyoruz; WebGoat'in baslamasi yavas, start_period genis tutuldu.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/WebGoat/actuator/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
     networks:
       - internal
     restart: unless-stopped

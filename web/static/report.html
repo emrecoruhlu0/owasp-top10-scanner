@@ -13,7 +13,8 @@
         <h1>📋 Tarama Raporu</h1>
         <div class="subtitle" id="reportSubtitle">Yükleniyor...</div>
       </div>
-      <div style="margin-left:auto;display:flex;gap:8px">
+      <div class="no-print" style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="window.print()">🖨 PDF / Yazdır</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadReport()">⬇ JSON İndir</button>
         <a href="/" class="btn btn-ghost btn-sm">← Ana Sayfa</a>
       </div>
@@ -26,8 +27,11 @@
       <!-- Özet -->
       <div class="card" id="summaryCard" style="display:none">
         <h2>Özet</h2>
-        <div class="summary-row" id="summaryRow"></div>
-        <div id="scanMeta" style="font-size:12px;color:var(--color-muted)"></div>
+        <div class="summary-flex">
+          <div class="summary-row" id="summaryRow" style="flex:1"></div>
+          <div class="severity-chart" id="severityChart"></div>
+        </div>
+        <div id="scanMeta" style="font-size:12px;color:var(--color-muted);margin-top:12px"></div>
       </div>
 
       <!-- Filtre -->
@@ -109,6 +113,8 @@
       document.getElementById('scanMeta').innerHTML =
         `Tarama zamanı: ${info.timestamp || '—'} &nbsp;|&nbsp; Modüller: ${(info.modules_run || []).join(', ')} &nbsp;|&nbsp; LLM: ${llmLabel} &nbsp;|&nbsp; RAG: ${ragLabel}`;
 
+      renderSeverityChart(breakdown);
+
       document.getElementById('summaryCard').style.display = 'block';
 
       // OWASP filtre butonları
@@ -177,6 +183,54 @@
 
     function severityVar(s) {
       return { Kritik: 'kritik', Yüksek: 'yuksek', Orta: 'orta', Düşük: 'dusuk' }[s] || 'info';
+    }
+
+    // Saf SVG donut grafiği — bağımlılık yok, print'te de çalışır.
+    function renderSeverityChart(breakdown) {
+      const order = ['Kritik', 'Yüksek', 'Orta', 'Düşük', 'Bilgilendirici'];
+      const colorOf = s => getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-' + severityVar(s)).trim() || '#888';
+      const data = order
+        .map(s => ({ s, n: breakdown[s] || 0, color: colorOf(s) }))
+        .filter(d => d.n > 0);
+      const total = data.reduce((a, d) => a + d.n, 0);
+      const el = document.getElementById('severityChart');
+
+      if (!total) {
+        el.innerHTML = '<div style="color:var(--color-muted);font-size:13px;text-align:center">Görselleştirilecek bulgu yok</div>';
+        return;
+      }
+
+      const R = 52, C = 2 * Math.PI * R, cx = 60, cy = 60;
+      let offset = 0;
+      const segs = data.map(d => {
+        const frac = d.n / total;
+        const seg = `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none"
+          stroke="${d.color}" stroke-width="16"
+          stroke-dasharray="${(frac * C).toFixed(2)} ${C.toFixed(2)}"
+          stroke-dashoffset="${(-offset * C).toFixed(2)}"
+          transform="rotate(-90 ${cx} ${cy})" />`;
+        offset += frac;
+        return seg;
+      }).join('');
+
+      const legend = data.map(d => `
+        <div class="legend-item">
+          <span class="legend-dot" style="background:${d.color}"></span>
+          <span>${d.s}</span>
+          <span class="legend-num">${d.n}</span>
+          <span class="legend-pct">%${Math.round(d.n / total * 100)}</span>
+        </div>`).join('');
+
+      el.innerHTML = `
+        <svg viewBox="0 0 120 120" width="120" height="120" aria-label="Önem dağılımı grafiği">
+          ${segs}
+          <text x="60" y="56" text-anchor="middle" font-size="22" font-weight="700"
+            fill="var(--color-text)">${total}</text>
+          <text x="60" y="72" text-anchor="middle" font-size="10"
+            fill="var(--color-muted)">bulgu</text>
+        </svg>
+        <div class="chart-legend">${legend}</div>`;
     }
 
     loadReport();
